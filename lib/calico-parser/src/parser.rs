@@ -505,18 +505,215 @@ impl<'a> Parser<'a> {
         self.parse_assignment()
     }
 
-    fn parse_assignment(&mut self) -> Result<Expr, ParseErr> { self.parse_ternary() }
-    fn parse_ternary(&mut self) -> Result<Expr, ParseErr>    { self.parse_or() }
-    fn parse_or(&mut self) -> Result<Expr, ParseErr>         { self.parse_and() }
-    fn parse_and(&mut self) -> Result<Expr, ParseErr>        { self.parse_bit_or() }
-    fn parse_bit_or(&mut self) -> Result<Expr, ParseErr>     { self.parse_bit_xor() }
-    fn parse_bit_xor(&mut self) -> Result<Expr, ParseErr>    { self.parse_bit_and() }
-    fn parse_bit_and(&mut self) -> Result<Expr, ParseErr>    { self.parse_equality() }
-    fn parse_equality(&mut self) -> Result<Expr, ParseErr>   { self.parse_relational() }
-    fn parse_relational(&mut self) -> Result<Expr, ParseErr> { self.parse_shift() }
-    fn parse_shift(&mut self) -> Result<Expr, ParseErr>      { self.parse_additive() }
-    fn parse_additive(&mut self) -> Result<Expr, ParseErr>   { self.parse_multiplicative() }
-    fn parse_multiplicative(&mut self) -> Result<Expr, ParseErr> { self.parse_unary() }
+    fn parse_assignment(&mut self) -> Result<Expr, ParseErr> {
+        let lhs = self.parse_ternary()?;
+        let op = match self.peek() {
+            Some(Token::Assign)      => AssignOp::Assign,
+            Some(Token::PlusAssign)  => AssignOp::Add,
+            Some(Token::MinusAssign) => AssignOp::Sub,
+            Some(Token::StarAssign)  => AssignOp::Mul,
+            Some(Token::SlashAssign) => AssignOp::Div,
+            Some(Token::PercentAssign) => AssignOp::Rem,
+            Some(Token::AmpAssign)   => AssignOp::And,
+            Some(Token::PipeAssign)  => AssignOp::Or,
+            Some(Token::CaretAssign) => AssignOp::Xor,
+            Some(Token::ShlAssign)   => AssignOp::Shl,
+            Some(Token::ShrAssign)   => AssignOp::Shr,
+            Some(Token::UShrAssign)  => AssignOp::UShr,
+            _ => return Ok(lhs),
+        };
+
+        self.consume();
+        let rhs = self.parse_assignment()?;
+        Ok(Expr::Assign { op, lhs: Box::new(lhs), rhs: Box::new(rhs) })
+    }
+    fn parse_ternary(&mut self) -> Result<Expr, ParseErr>    {
+        let c = self.parse_or()?;
+        if self.peek() == Some(&Token::Question) {
+            self.consume();
+
+            let then = self.parse_assignment()?;
+            self.expect(Token::Colon, "expected ':' in ternary")?;
+            let els = self.parse_assignment()?;
+            return Ok(Expr::Ternary {
+                cond: Box::new(c),
+                then: Box::new(then),
+                else_: Box::new(els)
+            })
+        }
+
+        Ok(c)
+    }
+    fn parse_or(&mut self) -> Result<Expr, ParseErr> {
+        let mut lhs = self.parse_and()?;
+        while let Some(t) = &self.peek() {
+            let op = match t {
+                Token::PipePipe => BinOp::OrOr,
+                _ => break,
+            };
+
+            self.consume();
+            let rhs = self.parse_and()?;
+            lhs = Expr::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+
+        Ok(lhs)
+    }
+    fn parse_and(&mut self) -> Result<Expr, ParseErr> {
+        let mut lhs = self.parse_bit_or()?;
+        while let Some(t) = &self.peek() {
+            let op = match t {
+                Token::AmpAmp => BinOp::AndAnd,
+                _ => break,
+            };
+
+            self.consume();
+            let rhs = self.parse_bit_or()?;
+            lhs = Expr::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+
+        Ok(lhs)
+    }
+    fn parse_bit_or(&mut self) -> Result<Expr, ParseErr> {
+        let mut lhs = self.parse_bit_xor()?;
+        while let Some(t) = &self.peek() {
+            let op = match t {
+                Token::Pipe => BinOp::Or,
+                _ => break,
+            };
+
+            self.consume();
+            let rhs = self.parse_bit_xor()?;
+            lhs = Expr::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+
+        Ok(lhs)
+    }
+    fn parse_bit_xor(&mut self) -> Result<Expr, ParseErr> {
+        let mut lhs = self.parse_bit_and()?;
+        while let Some(t) = &self.peek() {
+            let op = match t {
+                Token::Caret => BinOp::Xor,
+                _ => break,
+            };
+
+            self.consume();
+            let rhs = self.parse_bit_and()?;
+            lhs = Expr::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+
+        Ok(lhs)
+    }
+    fn parse_bit_and(&mut self) -> Result<Expr, ParseErr>    {
+        let mut lhs = self.parse_equality()?;
+        while let Some(t) = &self.peek() {
+            let op = match t {
+                Token::Amp => BinOp::And,
+                _ => break,
+            };
+
+            self.consume();
+            let rhs = self.parse_equality()?;
+            lhs = Expr::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+
+        Ok(lhs)
+    }
+    fn parse_equality(&mut self) -> Result<Expr, ParseErr>   {
+        let mut lhs = self.parse_relational()?;
+        while let Some(t) = &self.peek() {
+            let op = match t {
+                Token::EqEq => BinOp::Eq,
+                Token::BangEq => BinOp::Ne,
+                _ => break,
+            };
+
+            self.consume();
+            let rhs = self.parse_relational()?;
+            lhs = Expr::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+
+        Ok(lhs)
+    }
+    fn parse_relational(&mut self) -> Result<Expr, ParseErr> {
+        let mut lhs = self.parse_shift()?;
+        while let Some(t) = &self.peek() {
+            if matches!(t, Token::Instanceof) {
+                self.consume();
+
+                let ty = self.parse_type()?;
+                lhs = Expr::Instanceof { expr: Box::new(lhs), ty };
+                continue;
+            }
+
+            let op = match t {
+                Token::Lt => BinOp::Lt,
+                Token::Gt => BinOp::Gt,
+                Token::LtEq => BinOp::Le,
+                Token::GtEq => BinOp::Ge,
+                _ => break,
+            };
+
+            self.consume();
+            let rhs = self.parse_shift()?;
+            lhs = Expr::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+
+        Ok(lhs)
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr, ParseErr>      {
+        let mut lhs = self.parse_additive()?;
+        while let Some(t) = &self.peek() {
+            let op = match t {
+                Token::Shl => BinOp::Shl,
+                Token::Shr => BinOp::Shr,
+                Token::UShr => BinOp::UShr,
+                _ => break,
+            };
+
+            self.consume();
+            let rhs = self.parse_additive()?;
+            lhs = Expr::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+
+        Ok(lhs)
+    }
+    fn parse_additive(&mut self) -> Result<Expr, ParseErr>   {
+        let mut lhs = self.parse_multiplicative()?;
+        while let Some(t) = &self.peek() {
+            let op = match t {
+                Token::Plus => BinOp::Add,
+                Token::Minus => BinOp::Sub,
+                _ => break,
+            };
+
+            self.consume();
+            let rhs = self.parse_multiplicative()?;
+            lhs = Expr::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+
+        Ok(lhs)
+    }
+
+    fn parse_multiplicative(&mut self) -> Result<Expr, ParseErr> {
+        let mut lhs = self.parse_unary()?;
+        while let Some(t) = &self.peek() {
+            let op = match t {
+                Token::Star => BinOp::Mul,
+                Token::Slash => BinOp::Div,
+                Token::Percent => BinOp::Rem,
+                _ => break,
+            };
+
+            self.consume();
+            let rhs = self.parse_unary()?;
+            lhs = Expr::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+
+        Ok(lhs)
+    }
+
     fn parse_unary(&mut self) -> Result<Expr, ParseErr>      { self.parse_primary() }
 
     fn parse_cast(&mut self) -> Result<Expr, ParseErr> {
