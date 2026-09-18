@@ -22,26 +22,26 @@
 
 use crate::lexer::{Token, Lexer};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct CompilationUnit {
     pub package: Option<PackageDecl>,
     pub imports: Vec<ImportDecl>,
     pub types: Vec<TypeDecl>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct PackageDecl {
     pub name: Vec<String>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ImportDecl {
     pub static_: bool,
     pub path: Vec<String>,
     pub wildcard: bool,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum TypeDecl {
     Class(ClassDecl),
     Interface(InterfaceDecl),
@@ -49,7 +49,7 @@ pub enum TypeDecl {
     Annotation(AnnotationDecl),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ClassDecl {
     pub modifiers: Vec<Modifier>,
     pub name: String,
@@ -59,7 +59,7 @@ pub struct ClassDecl {
     pub body: Vec<ClassMember>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct InterfaceDecl {
     pub modifiers: Vec<Modifier>,
     pub name: String,
@@ -68,7 +68,7 @@ pub struct InterfaceDecl {
     pub body: Vec<InterfaceMember>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct EnumDecl {
     pub modifiers: Vec<Modifier>,
     pub name: String,
@@ -77,14 +77,14 @@ pub struct EnumDecl {
     pub body: Vec<ClassMember>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct AnnotationDecl {
     pub modifiers: Vec<Modifier>,
     pub name: String,
     pub body: Vec<AnnotationMember>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct EnumConstant {
     pub annotations: Vec<Annotation>,
     pub name: String,
@@ -92,7 +92,7 @@ pub struct EnumConstant {
     pub body: Option<Vec<ClassMember>>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ClassMember {
     Field(FieldDecl),
     Method(MethodDecl),
@@ -102,7 +102,7 @@ pub enum ClassMember {
     InnerType(TypeDecl),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum InterfaceMember {
     Method(MethodDecl),
     Constant(FieldDecl),
@@ -110,7 +110,7 @@ pub enum InterfaceMember {
     Default(MethodDecl),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum AnnotationMember {
     Element {
         name: String,
@@ -120,32 +120,32 @@ pub enum AnnotationMember {
     Constant(FieldDecl),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FieldDecl {
     pub modifiers: Vec<Modifier>,
     pub ty: TypeExpr,
     pub declarators: Vec<VarDeclarator>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct VarDeclarator {
     pub name: String,
     pub dims: usize,
     pub init: Option<VarInit>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum VarInit {
     Expr(Expr),
     Array(ArrayInit),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ArrayInit {
     pub elements: Vec<VarInit>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct MethodDecl {
     pub modifiers: Vec<Modifier>,
     pub type_params: Vec<TypeParam>,
@@ -156,7 +156,7 @@ pub struct MethodDecl {
     pub body: Option<Vec<Stmt>>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ConstructorDecl {
     pub modifiers: Vec<Modifier>,
     pub type_params: Vec<TypeParam>,
@@ -166,7 +166,7 @@ pub struct ConstructorDecl {
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Param {
     pub modifiers: Vec<Modifier>,
     pub ty: TypeExpr,
@@ -175,13 +175,13 @@ pub struct Param {
     pub dims: usize,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct TypeParam {
     pub name: String,
     pub bounds: Vec<TypeExpr>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum TypeExpr {
     Primitive(PrimitiveType),
     Void,
@@ -192,24 +192,24 @@ pub enum TypeExpr {
     Array(Box<TypeExpr>, usize),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum PrimitiveType {
     Boolean, Byte, Short, Int, Long, Char, Float, Double
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum TypeArg {
     Type(TypeExpr),
     Wildcard(Option<WildcardBound>)
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum WildcardBound {
     Extends(TypeExpr),
     Super(TypeExpr)
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Modifier {
     Public, Protected, Private,
     Static, Final, Abstract, Native,
@@ -217,20 +217,20 @@ pub enum Modifier {
     Default, Annotation(Annotation)
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Annotation {
     pub name: Vec<String>,
     pub args: AnnotationArgs,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum AnnotationArgs {
     None,
     Single(Expr),
     Named(Vec<(String, Expr)>)
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Stmt {
     Empty,
     Block(Vec<Stmt>),
@@ -277,7 +277,7 @@ pub enum Stmt {
     },
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ForStmt {
     Basic {
         init: Vec<Stmt>,
@@ -294,19 +294,19 @@ pub enum ForStmt {
     },
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct SwitchGroup {
     pub labels: Vec<SwitchLabel>,
     pub stmts: Vec<Stmt>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum SwitchLabel {
     Case(Expr),
     Default,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct TryStmt {
     pub resources: Vec<TryResource>,
     pub body: Vec<Stmt>,
@@ -314,7 +314,7 @@ pub struct TryStmt {
     pub finally: Option<Vec<Stmt>>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct TryResource {
     pub modifiers: Vec<Modifier>,
     pub ty: TypeExpr,
@@ -322,7 +322,7 @@ pub struct TryResource {
     pub init: Expr,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct CatchClause {
     pub modifiers: Vec<Modifier>,
     pub types: Vec<TypeExpr>,
@@ -330,7 +330,7 @@ pub struct CatchClause {
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     IntLiteral(i64),
     LongLiteral(i64),
@@ -410,7 +410,7 @@ pub enum Expr {
     },
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum MethodRefReceiver {
     Type(TypeExpr),
     Expr(Box<Expr>),
@@ -418,14 +418,14 @@ pub enum MethodRefReceiver {
     New,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum LambdaParams {
     Inferred(Vec<String>),
     Typed(Vec<Param>),
     Single(String),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum LambdaBody {
     Expr(Box<Expr>),
     Block(Vec<Stmt>),

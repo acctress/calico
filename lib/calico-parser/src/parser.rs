@@ -22,6 +22,7 @@
 
 use crate::lexer::{Token, Lexer};
 use crate::ast::*;
+use crate::lexer::Token::{LBracket, RBracket};
 
 #[derive(Debug)]
 pub struct Span {
@@ -95,6 +96,10 @@ impl<'a> Parser<'a> {
             Some(t) => Err(ParseErr::UnexpectedToken(t, Span { line: 0, col: 0 })),
             None => Err(ParseErr::UnexpectedEof),
         }
+    }
+
+    pub fn parse_expr_p(&mut self) -> Result<Expr, ParseErr> {
+        self.parse_expr()
     }
 
     pub fn parse(&mut self) -> Result<CompilationUnit, ParseErr> {
@@ -176,29 +181,15 @@ impl<'a> Parser<'a> {
             vec![]
         };
 
-        let superclass = if self.peek() == Some(&Token::Extends) {
-            self.consume();
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
+        let superclass = self.optional_after(
+            Token::Extends,
+            Self::parse_type
+        )?;
 
-        let interfaces = if self.peek() == Some(&Token::Implements) {
-            self.consume();
-            let mut types = vec![];
-            loop {
-                types.push(self.parse_type()?);
-                if self.peek() == Some(&Token::Comma) {
-                    self.consume();
-                } else {
-                    break;
-                }
-            }
-
-            types
-        } else {
-            vec![]
-        };
+        let interfaces = self.optional_after(
+            Token::Implements,
+            |p| p.seperated(Self::parse_type, Token::Comma),
+        )?.unwrap_or_default();
 
         let body = self.parse_class_body()?;
         Ok(ClassDecl {
@@ -326,22 +317,71 @@ impl<'a> Parser<'a> {
 
     fn parse_method_decl(&mut self, modifiers: Vec<Modifier>, return_ty: TypeExpr, name: String) -> Result<MethodDecl, ParseErr> {
         // method_decl <- type_params? type ident '(' params? ')' ('[' ']')* throws? (block | ';')
-        todo!()
+        let params = self.parse_params()?;
+        let trailing_dims = self.repeat_pair(LBracket, RBracket)?;
+        let return_ty = if trailing_dims > 0 {
+            TypeExpr::Array(Box::new(return_ty), trailing_dims)
+        } else {
+            return_ty
+        };
+
+        let throws = self.optional_after(
+            Token::Throws, |p| p.seperated(Self::parse_type, Token::Comma))?.unwrap_or_default();
+        let body = self.optional(|p| p.at(&Token::LBrace), Self::parse_block)?;
+        if body.is_none() {
+            self.expect(Token::Semicolon, "expected ';' after body.")?;
+        }
+
+        Ok(MethodDecl {
+            modifiers,
+            type_params: vec![],
+            return_ty,
+            name,
+            params,
+            throws,
+            body
+        })
     }
 
     fn parse_constructor_decl(&mut self, modifiers: Vec<Modifier>, name: String) -> Result<ConstructorDecl, ParseErr> {
         // constructor_decl <- type_params? ident '(' params? ')' throws? block
-        todo!()
+        let params = self.parse_params()?;
+        let throws = self.optional_after(
+            Token::Throws, |p| p.seperated(Self::parse_type, Token::Comma))?.unwrap_or_default();
+        let body = self.parse_block()?;
+
+        Ok(ConstructorDecl {
+            modifiers,
+            type_params: vec![],
+            name,
+            params,
+            throws,
+            body
+        })
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, ParseErr> {
         // params <- param (',' param)* (',' '...' param)?
-        todo!()
+        let params = self.delimited_list(
+            Token::LParen,
+            Token::RParen,
+            Token::Comma,
+            |p| !matches!(p.peek(), Some(Token::RParen) | None),
+            Self::parse_param,
+            false
+        )?;
+
+        Ok(params)
     }
 
     fn parse_param(&mut self) -> Result<Param, ParseErr> {
         // param <- modifiers? type '...'? ident ('[' ']')*
-        todo!()
+        let modifiers = self.parse_modifiers()?;
+        let ty = self.parse_type()?;
+        let varargs = self.eat(Token::Ellipsis);
+        let name = self.expect_identifier()?;
+        let dims = self.repeat_pair(LBracket, RBracket)?;
+        Ok(Param{ modifiers, ty, varargs, name, dims })
     }
 
     fn parse_modifiers(&mut self) -> Result<Vec<Modifier>, ParseErr> {
@@ -390,6 +430,7 @@ impl<'a> Parser<'a> {
             Some(Token::Char)    => { self.consume(); TypeExpr::Primitive(PrimitiveType::Char) }
             Some(Token::Float)   => { self.consume(); TypeExpr::Primitive(PrimitiveType::Float) }
             Some(Token::Double)  => { self.consume(); TypeExpr::Primitive(PrimitiveType::Double) }
+            Some(Token::Void)    => { self.consume(); TypeExpr::Void }
             Some(t) => return Err(ParseErr::UnexpectedToken(t.clone(), Span { line: 0, col: 0 })),
             None    => return Err(ParseErr::UnexpectedEof),
         };
@@ -439,7 +480,16 @@ impl<'a> Parser<'a> {
 
     fn parse_block(&mut self) -> Result<Vec<Stmt>, ParseErr> {
         // block <- '{' stmt* '}'
-        todo!()
+        self.expect(Token::LBrace, "expected '{'")?;
+
+        let mut stmts = vec![];
+        while !matches!(self.peek(), Some(Token::RBrace) | None) {
+            stmts.push(self.parse_stmt()?);
+        }
+
+        self.expect(Token::RBrace, "expected '}' to close block")?;
+
+        Ok(stmts)
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, ParseErr> {
@@ -447,35 +497,163 @@ impl<'a> Parser<'a> {
         //       | switch_stmt | synchronized_stmt | return_stmt | throw_stmt
         //       | break_stmt | continue_stmt | assert_stmt | labeled_stmt
         //       | local_var_decl | expr_stmt | ';'
-        todo!()
+        match self.peek() {
+            Some(Token::LBrace) => Ok(Stmt::Block(self.parse_block()?)),
+            Some(Token::If) => self.parse_if_stmt(),
+            Some(Token::For)          => self.parse_for_stmt(),
+            Some(Token::While)        => self.parse_while_stmt(),
+            Some(Token::Do)           => self.parse_do_stmt(),
+            Some(Token::Try)          => self.parse_try_stmt(),
+            Some(Token::Switch)       => self.parse_switch_stmt(),
+            Some(Token::Synchronized) => self.parse_sync_stmt(),
+            Some(Token::Return)       => self.parse_return_stmt(),
+            Some(Token::Throw)        => self.parse_throw_stmt(),
+            Some(Token::Break)        => self.parse_break_stmt(),
+            Some(Token::Continue)     => self.parse_continue_stmt(),
+            Some(Token::Assert)       => self.parse_assert_stmt(),
+            Some(Token::Semicolon)    => { self.consume(); Ok(Stmt::Empty) },
+            _ => self.parse_expr_or_local_var(),
+        }
     }
 
     fn parse_if_stmt(&mut self) -> Result<Stmt, ParseErr> {
         // if_stmt <- 'if' '(' expr ')' stmt ('else' stmt)?
-        todo!()
+        self.consume();
+        let cond = self.delimited(Token::LParen, Self::parse_expr, Token::RParen)?;
+        let then = self.parse_stmt()?;
+        let else_ = self.optional_after(Token::Else, Self::parse_stmt)?;
+        Ok(Stmt::If { cond: Box::new(cond), then: Box::new(then), else_: else_.map(Box::new) })
     }
 
     fn parse_for_stmt(&mut self) -> Result<Stmt, ParseErr> {
         // for_stmt <- 'for' '(' (enhanced_for | basic_for) ')'  stmt
         // enhanced  <- modifiers? type ident ':' expr
         // basic     <- for_init? ';' expr? ';' for_update?
-        todo!()
+        self.consume();
+        self.expect(Token::LParen, "expected '(' after 'for'")?;
+
+        let init: Vec<Stmt> = if self.at(&Token::Semicolon) {
+            self.consume();
+            vec![]
+        } else if self.is_local_var() {
+            let modifiers = self.parse_modifiers()?;
+            let ty = self.parse_type()?;
+            let var = self.expect_identifier()?;
+
+            if self.eat(Token::Colon) {
+                let iter = self.parse_expr()?;
+
+                self.expect(Token::RParen, "expected ')'")?;
+                let body = self.parse_stmt()?;
+                return Ok(Stmt::For(ForStmt::Enhanced {
+                    modifiers,
+                    ty,
+                    var,
+                    iter: Box::new(iter),
+                    body: Box::new(body)
+                }));
+            }
+
+            let mut declarators = vec![self.parse_var_declarator_wn(var)?];
+            while self.eat(Token::Comma) {
+                declarators.push(self.parse_var_declarator()?);
+            }
+
+            self.expect(Token::Semicolon, "expected ';'")?;
+            vec![Stmt::LocalVar { modifiers, ty, declarators }]
+        } else {
+            let ex = self.seperated(Self::parse_expr, Token::Comma)?;
+            self.expect(Token::Semicolon, "expected ';'")?;
+            ex.into_iter().map(Stmt::Expr).collect()
+        };
+
+        let cond = self.optional(|p| !p.at(&Token::Semicolon), Self::parse_expr)?;
+        self.expect(Token::Semicolon, "expected ';'")?;
+
+        let update = if self.at(&Token::RParen) {
+            vec![]
+        } else {
+            self.seperated(Self::parse_expr, Token::Comma)?
+        };
+
+        self.expect(Token::RParen, "expected ')'")?;
+        let body = self.parse_stmt()?;
+
+        Ok(Stmt::For(ForStmt::Basic {
+            init,
+            cond: cond.map(Box::new),
+            update,
+            body: Box::new(body)
+        }))
     }
 
     fn parse_while_stmt(&mut self) -> Result<Stmt, ParseErr> {
         // while_stmt <- 'while' '(' expr ')' stmt
-        todo!()
+        self.consume();
+        let cond = self.delimited(Token::LParen, Self::parse_expr, Token::RParen)?;
+        let body = self.parse_stmt()?;
+        Ok(Stmt::While { cond: Box::new(cond), body: Box::new(body) })
     }
 
     fn parse_do_stmt(&mut self) -> Result<Stmt, ParseErr> {
         // do_stmt <- 'do' stmt 'while' '(' expr ')' ';'
-        todo!()
+        self.consume();
+        let body = self.parse_stmt()?;
+        self.expect(Token::While, "expected 'while' after do body")?;
+        let cond = self.delimited(Token::LParen, Self::parse_expr, Token::RParen)?;
+        self.expect(Token::Semicolon, "expected ';'")?;
+        Ok(Stmt::DoWhile { body: Box::new(body), cond: Box::new(cond) })
     }
 
     fn parse_try_stmt(&mut self) -> Result<Stmt, ParseErr> {
         // try_stmt <- 'try' resource_spec? block catch_clause* finally_clause?
         // resource_spec <- '(' try_resource (';' try_resource)* ';'? ')'
-        todo!()
+        self.consume();
+        let resources = self.optional(
+            |p| p.at(&Token::LParen),
+            Self::parse_try_resources
+        )?.unwrap_or_default();
+
+        let body = self.parse_block()?;
+        let catches = self.zero_or_more(|p| p.at(&Token::Catch), Self::parse_catch_clause)?;
+        let finally = self.optional_after(Token::Finally, Self::parse_block)?;
+        Ok(Stmt::Try(TryStmt { resources, body, catches, finally }))
+    }
+
+    fn parse_try_resource(&mut self) -> Result<TryResource, ParseErr> {
+        let modifiers = self.parse_modifiers()?;
+        let ty = self.parse_type()?;
+        let name = self.expect_identifier()?;
+        self.expect(Token::Assign, "expected '='")?;
+        let init = self.parse_expr()?;
+        Ok(TryResource { modifiers, ty, name, init })
+    }
+
+    fn parse_try_resources(&mut self) -> Result<Vec<TryResource>, ParseErr> {
+        self.expect(Token::LParen, "expected '('")?;
+
+        let mut resources = vec![self.parse_try_resource()?];
+        while self.eat(Token::Semicolon) {
+            if self.at(&Token::RParen) { break; }
+            resources.push(self.parse_try_resource()?);
+        }
+
+        self.expect(Token::RParen, "expected ')'")?;
+        Ok(resources)
+    }
+
+    fn parse_catch_clause(&mut self) -> Result<CatchClause, ParseErr> {
+        self.consume();
+        self.expect(Token::LParen, "expected '('")?;
+
+        let modifiers = self.parse_modifiers()?;
+        let types = self.seperated(Self::parse_type, Token::Pipe)?;
+        let name = self.expect_identifier()?;
+
+        self.expect(Token::RParen, "expected ')'")?;
+        let body = self.parse_block()?;
+
+        Ok(CatchClause { modifiers, types, name, body })
     }
 
     fn parse_switch_stmt(&mut self) -> Result<Stmt, ParseErr> {
@@ -486,17 +664,90 @@ impl<'a> Parser<'a> {
 
     fn parse_return_stmt(&mut self) -> Result<Stmt, ParseErr> {
         // return_stmt <- 'return' expr? ';'
-        todo!()
+        self.consume();
+        if !matches!(self.peek(), Some(&Token::Semicolon)) {
+            let expr = self.parse_expr()?;
+            self.expect(Token::Semicolon, "expected ';' after expression in return statement.")?;
+            Ok(Stmt::Return(Some(Box::new(expr))))
+        } else {
+            self.consume();
+            Ok(Stmt::Return(None))
+        }
     }
 
     fn parse_throw_stmt(&mut self) -> Result<Stmt, ParseErr> {
         // throw_stmt <- 'throw' expr ';'
-        todo!()
+        self.consume();
+        let e = self.parse_expr()?;
+        self.expect(Token::Semicolon, "expected ';' after expression in throw statement.")?;
+        Ok(Stmt::Throw(Box::new(e)))
     }
 
     fn parse_local_var_decl(&mut self) -> Result<Stmt, ParseErr> {
         // local_var_decl <- modifiers? type var_declarator (',' var_declarator)* ';'
-        todo!()
+        let modifiers = self.parse_modifiers()?;
+        let ty = self.parse_type()?;
+        let name = self.get_identifier_value()?;
+        let mut declarators = vec![self.parse_var_declarator_wn(name)?];
+        while self.peek() == Some(&Token::Comma) {
+            self.consume();
+            declarators.push(self.parse_var_declarator()?);
+        }
+
+        self.expect(Token::Semicolon, "expected ';' after local variable declaration")?;
+        Ok(Stmt::LocalVar { modifiers, ty, declarators })
+    }
+
+    fn parse_break_stmt(&mut self) -> Result<Stmt, ParseErr> {
+        self.consume();
+        let label = self.optional(
+            |p| matches!(p.peek(), Some(Token::Identifier(_))), Self::expect_identifier)?;
+        self.expect(Token::Semicolon, "expected ';'")?;
+        Ok(Stmt::Break(label))
+    }
+    fn parse_continue_stmt(&mut self) -> Result<Stmt, ParseErr> {
+        self.consume();
+        let label = self.optional(
+            |p| matches!(p.peek(), Some(Token::Identifier(_))), Self::expect_identifier)?;
+        self.expect(Token::Semicolon, "expected ';'")?;
+        Ok(Stmt::Continue(label))
+    }
+    fn parse_assert_stmt(&mut self) -> Result<Stmt, ParseErr> {
+        self.consume();
+        let cond = self.parse_expr()?;
+        let msg = self.optional_after(Token::Colon, Self::parse_expr)?;
+        self.expect(Token::Semicolon, "expected ';'")?;
+        Ok(Stmt::Assert { cond: Box::new(cond), msg: msg.map(Box::new) })
+    }
+    fn parse_sync_stmt(&mut self) -> Result<Stmt, ParseErr> {
+        self.consume();
+        let lock = self.delimited(Token::LParen, Self::parse_expr, Token::RParen)?;
+        let body = self.parse_block()?;
+        Ok(Stmt::Synchronized { lock: Box::new(lock), body })
+    }
+    fn parse_expr_or_local_var(&mut self) -> Result<Stmt, ParseErr> {
+        if self.is_local_var() {
+            self.parse_local_var_decl()
+        } else {
+            let expr = self.parse_expr()?;
+            self.expect(Token::Semicolon, "expected ';' after expression statement.")?;
+            Ok(Stmt::Expr(expr))
+        }
+    }
+
+    fn is_local_var(&self) -> bool {
+        match self.peek() {
+            Some(Token::Boolean | Token::Byte | Token::Short | Token::Int
+                 | Token::Long  | Token::Char  | Token::Float  | Token::Double) => true,
+            Some(Token::Identifier(_)) => matches!(
+                self.peek2(),
+                Some(Token::Identifier(_))
+                | Some(Token::LBracket)
+                | Some(Token::Lt)
+            ),
+            Some(Token::Final) | Some(Token::At) => true,
+            _ => false,
+        }
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ParseErr> {
@@ -714,7 +965,24 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    fn parse_unary(&mut self) -> Result<Expr, ParseErr>      { self.parse_primary() }
+    fn parse_unary(&mut self) -> Result<Expr, ParseErr>      {
+        let op = match self.peek() {
+            Some(Token::Plus) => UnaryOp::Plus,
+            Some(Token::Minus) => UnaryOp::Neg,
+            Some(Token::Bang) => UnaryOp::Not,
+            Some(Token::Tilde) => UnaryOp::BitNot,
+            Some(Token::PlusPlus) => UnaryOp::PreInc,
+            Some(Token::MinusMinus) => UnaryOp::PreDec,
+            _ => {
+                let prim = self.parse_primary()?;
+                return self.parse_postfix(prim);
+            }
+        };
+
+        self.consume();
+        let e = self.parse_unary()?;
+        Ok(Expr::UnaryOp { op, expr: Box::new(e) })
+    }
 
     fn parse_cast(&mut self) -> Result<Expr, ParseErr> {
         // cast_expr <- '(' primitive_type ')' unary
@@ -722,9 +990,49 @@ impl<'a> Parser<'a> {
         todo!()
     }
 
-    fn parse_postfix(&mut self, expr: Expr) -> Result<Expr, ParseErr> {
+    fn parse_postfix(&mut self, mut expr: Expr) -> Result<Expr, ParseErr> {
         // postfix <- primary (('.' | '::') ... | '[' expr ']' | '++' | '--')*
-        todo!()
+        loop {
+            match self.peek() {
+                Some(Token::Dot) => {
+                    self.consume();
+
+                    let name = self.get_identifier_value()?;
+                    if self.peek() == Some(&Token::LParen) {
+                        let args = self.parse_args()?;
+                        expr = Expr::MethodCall { receiver: Some(Box::new(expr)), type_args: vec![], name, args };
+                    } else {
+                        expr = Expr::FieldAccess { receiver: Box::new(expr), field: name };
+                    }
+                }
+
+                Some(Token::ColonColon) => {
+                    self.consume();
+                }
+
+                Some(Token::LBracket) => {
+                    self.consume();
+
+                    let idx = self.parse_expr()?;
+                    self.expect(Token::RBracket, "expected ']'")?;
+                    expr = Expr::ArrayAccess { array: Box::new(expr), index: Box::new(idx) };
+                }
+
+                Some(Token::PlusPlus) => {
+                    self.consume();
+                    expr = Expr::PostfixOp { op: PostfixOp::Inc, expr: Box::new(expr) };
+                }
+
+                Some(Token::MinusMinus) => {
+                    self.consume();
+                    expr = Expr::PostfixOp { op: PostfixOp::Dec, expr: Box::new(expr) };
+                }
+
+                _ => break,
+            }
+        }
+
+        Ok(expr)
     }
 
     fn parse_primary(&mut self) -> Result<Expr, ParseErr> {
@@ -739,6 +1047,12 @@ impl<'a> Parser<'a> {
             Some(Token::NullLiteral)       => Ok(Expr::Null),
             Some(Token::This)              => Ok(Expr::This),
             Some(Token::Identifier(s))     => Ok(Expr::Ident(s)),
+            Some(Token::New)               => self.parse_new_expr(),
+            Some(Token::LParen) => {
+                let expr = self.parse_expr()?;
+                self.expect(Token::RParen, "expected ')'")?;
+                Ok(expr)
+            }
             Some(t) => Err(ParseErr::UnexpectedToken(t, Span { line: 0, col: 0 })),
             None    => Err(ParseErr::UnexpectedEof),
         }
@@ -748,7 +1062,41 @@ impl<'a> Parser<'a> {
         // new_expr <- 'new' type_args? (class_creator | array_creator)
         // class_creator <- type '(' args? ')' class_body?
         // array_creator <- type ('[' expr ']')+ ('[' ']')* | type ('[' ']')+ array_init
-        todo!()
+        // self.consume();
+
+        let type_args = self.optional_after(Token::Lt, |p| {
+            let args = p.parse_type_args()?;
+            p.expect(Token::Gt, "expected '>'")?;
+            Ok(args)
+        })?.unwrap_or_default();
+
+        let ty = self.parse_type()?;
+        if self.peek() == Some(&Token::LParen) {
+            let args = self.parse_args()?;
+            let body = self.optional(
+                |p| p.peek() == Some(&Token::LBrace),
+                Self::parse_class_body
+            )?;
+            Ok(Expr::NewObject { type_args, ty, args, body })
+        } else {
+            let mut dims: Vec<Option<Expr>> = vec![];
+            while self.peek() == Some(&Token::LBracket) && self.peek2() != Some(&Token::RBracket) {
+                self.consume();
+
+                dims.push(Some(self.parse_expr()?));
+                self.expect(Token::RBracket, "expected ']'")?;
+            }
+
+            let us = self.repeat_pair(Token::LBracket, Token::RBracket)?;
+            dims.extend(std::iter::repeat_n(None, us));
+
+            let init = self.optional(
+                |p| p.peek() == Some(&Token::LBrace),
+                Self::parse_array_init
+            )?;
+
+            Ok(Expr::NewArray { ty, dims, init })
+        }
     }
 
     fn parse_lambda(&mut self) -> Result<Expr, ParseErr> {
@@ -774,11 +1122,255 @@ impl<'a> Parser<'a> {
 
     fn parse_args(&mut self) -> Result<Vec<Expr>, ParseErr> {
         // args <- '(' (expr (',' expr)*)? ')'
-        todo!()
+        self.expect(Token::LParen, "expected '('")?;
+
+        let mut args = vec![];
+        if self.peek() == Some(&Token::RParen) {
+            self.consume();
+            return Ok(args);
+        }
+
+        loop {
+            args.push(self.parse_expr()?);
+            match self.peek() {
+                Some(Token::Comma) => { self.consume(); }
+                _ => break,
+            }
+        }
+
+        self.expect(Token::RParen, "expected ')'")?;
+        Ok(args)
     }
 
     fn parse_array_init(&mut self) -> Result<ArrayInit, ParseErr> {
         // array_init <- '{' (var_init (',' var_init)* ','?)? '}'
         todo!()
+    }
+
+    #[inline]
+    fn at(&self, token: &Token) -> bool {
+        self.peek() == Some(token)
+    }
+
+    #[inline]
+    fn at2(&self, f: &Token, s: &Token) -> bool {
+        self.peek() == Some(f) && self.peek2() == Some(s)
+    }
+
+    #[inline]
+    fn eat(&mut self, token: Token) -> bool {
+        if self.at(&token) {
+            self.consume();
+            true
+        } else {
+            false
+        }
+    }
+
+    #[inline]
+    fn eat2(&mut self, f: Token, s: Token) -> bool {
+        if !self.at2(&f, &s) {
+            return false;
+        }
+
+        self.consume();
+        self.consume();
+        true
+    }
+
+    /// X?
+    #[inline]
+    fn optional<T, S, P>(
+        &mut self,
+        starts: S,
+        parse: P,
+    ) -> Result<Option<T>, ParseErr>
+    where
+        S: FnOnce(&Self) -> bool,
+        P: FnOnce(&mut Self) -> Result<T, ParseErr>
+    {
+        if starts(self) {
+            Ok(Some(parse(self)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[inline]
+    fn optional_after<T>(
+        &mut self,
+        marker: Token,
+        parse: impl FnOnce(&mut Self) -> Result<T, ParseErr>,
+    ) -> Result<Option<T>, ParseErr> {
+        if !self.eat(marker) {
+            return Ok(None);
+        }
+
+        Ok(Some(parse(self)?))
+    }
+
+    /// X*
+    #[inline]
+    fn zero_or_more<T, S, P>(
+        &mut self,
+        mut starts: S,
+        mut parse: P,
+    ) -> Result<Vec<T>, ParseErr>
+    where
+        S: FnMut(&Self) -> bool,
+        P: FnMut(&mut Self) -> Result<T, ParseErr>
+    {
+        let mut v = Vec::new();
+        while starts(self) {
+            v.push(parse(self)?);
+        }
+        Ok(v)
+    }
+
+    /// X+
+    #[inline]
+    fn one_or_more<T, S, P>(
+        &mut self,
+        mut starts: S,
+        mut parse: P
+    ) -> Result<Vec<T>, ParseErr>
+    where
+        S: FnMut(&Self) -> bool,
+        P: FnMut(&mut Self) -> Result<T, ParseErr>
+    {
+        if !starts(self) {
+            return Err(self.unexpected_curr()?);
+        }
+
+        let mut v = Vec::new();
+        while starts(self) {
+            v.push(parse(self)?);
+        }
+        Ok(v)
+    }
+
+    /// X (sep X)*
+    #[inline]
+    fn seperated<T, P>(
+        &mut self,
+        parse: P,
+        seperator: Token
+    ) -> Result<Vec<T>, ParseErr>
+    where P: FnMut(&mut Self) -> Result<T, ParseErr>
+    {
+        let mut parse = parse;
+        let mut v = vec![parse(self)?];
+        while self.eat(seperator.clone()) {
+            v.push(parse(self)?);
+        }
+        Ok(v)
+    }
+
+    /// X (sep X)* optional
+    #[inline]
+    fn seperated_optional<T, S, P>(
+        &mut self,
+        starts: S,
+        parse: P,
+        seperator: Token
+    ) -> Result<Vec<T>, ParseErr>
+    where
+        S: FnOnce(&Self) -> bool,
+        P: FnMut(&mut Self) -> Result<T, ParseErr>
+    {
+        if !starts(self) {
+            return Ok(Vec::new());
+        }
+        self.seperated(parse, seperator)
+    }
+
+    /// '(' X ')'
+    #[inline]
+    fn delimited<T, P>(
+        &mut self,
+        open: Token,
+        parse: P,
+        close: Token
+    ) -> Result<T, ParseErr>
+    where
+        P: FnOnce(&mut Self) -> Result<T, ParseErr>
+    {
+        self.expect(open, "expected opening delimiter")?;
+        let val = parse(self)?;
+        self.expect(close, "expected closing delimiter")?;
+        Ok(val)
+    }
+
+    /// '(' (X (S X)*)? ')'
+    #[inline]
+    fn delimited_list<T, S, P>(
+        &mut self,
+        open: Token,
+        close: Token,
+        seperator: Token,
+        starts: S,
+        parse: P,
+        trailing: bool
+    ) -> Result<Vec<T>, ParseErr>
+    where
+        S: Fn(&Self) -> bool,
+        P: FnMut(&mut Self) -> Result<T, ParseErr>
+    {
+        self.expect(open, "expected opening delimiter")?;
+        if self.eat(close.clone()) {
+            return Ok(Vec::new());
+        }
+
+        let mut vals = self.seperated(parse, seperator.clone())?;
+
+        if trailing && self.eat(seperator) {
+            self.expect(close, "expected closing delimiter")?;
+            return Ok(vals);
+        }
+        self.expect(close, "expected closing delimiter")?;
+
+        Ok(std::mem::take(&mut vals))
+    }
+
+    /// ('[' ']')*
+    #[inline]
+    fn repeat_pair(
+        &mut self,
+        open: Token,
+        close: Token,
+    ) -> Result<usize, ParseErr> {
+        let mut count = 0;
+
+        while self.eat(open.clone()) {
+            self.expect(close.clone(), "expected closing delimiter")?;
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    #[inline]
+    fn expect_identifier(&mut self) -> Result<String, ParseErr> {
+        match self.consume() {
+            Some(Token::Identifier(name)) => Ok(name),
+            Some(t) => {
+                Err(ParseErr::UnexpectedToken(
+                    t,
+                    Span { line: 0, col: 0 },
+                ))
+            }
+            None => Err(ParseErr::UnexpectedEof)
+        }
+    }
+
+    #[inline]
+    fn unexpected_curr<T>(&self) -> Result<T, ParseErr> {
+        match self.peek() {
+            Some(t) => Err(ParseErr::UnexpectedToken(
+                t.clone(),
+                Span { line: 0, col: 0 }
+            )),
+            None => Err(ParseErr::UnexpectedEof),
+        }
     }
 }
